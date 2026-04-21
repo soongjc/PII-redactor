@@ -1,15 +1,11 @@
-import logging
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from ._logging import get_logger
 from .db import init_db
 from .routers import documents
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+get_logger("pii")  # ensure the handler is attached at import time
 
 app = FastAPI(title="PII Redactor", version="0.1.0")
 

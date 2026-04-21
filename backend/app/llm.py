@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import re
 import time
 from pathlib import Path
@@ -11,9 +10,10 @@ from typing import Any
 
 import httpx
 
+from ._logging import get_logger
 from .config import settings
 
-logger = logging.getLogger("pii.llm")
+logger = get_logger("pii.llm")
 
 _CHAT_TIMEOUT = httpx.Timeout(600.0, connect=10.0)
 
@@ -98,7 +98,9 @@ def _preview(s: str, n: int = 400) -> str:
 def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], float]:
     url = f"{settings.ollama_host.rstrip('/')}/api/chat"
     model = payload.get("model")
-    logger.info("[%s] -> %s model=%s", label, url, model)
+    msg = f"[{label}] -> {url} model={model}"
+    logger.info(msg)
+    print(msg, flush=True)
     t0 = time.time()
     with httpx.Client(timeout=_CHAT_TIMEOUT) as client:
         resp = client.post(url, json=payload)
@@ -106,7 +108,9 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
         data = resp.json()
     elapsed = time.time() - t0
     content = data.get("message", {}).get("content", "")
-    logger.info("[%s] <- %.2fs | response: %s", label, elapsed, _preview(content))
+    msg = f"[{label}] <- {elapsed:.2f}s | response: {_preview(content)}"
+    logger.info(msg)
+    print(msg, flush=True)
     return data, elapsed
 
 
