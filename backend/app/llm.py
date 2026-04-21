@@ -206,27 +206,43 @@ def _extract_regions_list(parsed: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _preresize_for_vl(image_path: Path, max_side: int) -> tuple[bytes, int, int, int, int]:
-    """Resize the page image so longest side == max_side. Returns (png_bytes, orig_w, orig_h, new_w, new_h).
+def _smart_resize(
+    h: int, w: int, *, factor: int = 28, min_pixels: int = 3136, max_pixels: int = 802816
+) -> tuple[int, int]:
+    """Replicates Qwen2.5-VL's image preprocessor (from transformers
+    image_processing_qwen2_vl.smart_resize). Returns (h_bar, w_bar) rounded
+    to multiples of `factor` and bounded by min/max pixel budgets. Sending
+    an image pre-resized to these dims means the model won't resize further
+    — so bboxes come back in the exact space we expect."""
+    import math
 
-    Qwen-VL resizes images internally ("smart_resize") and returns bboxes in
-    THAT resized space — not the original. By resizing ourselves to a known
-    size we avoid having to replicate the model-specific preprocessor.
-    """
+    h_bar = max(factor, round(h / factor) * factor)
+    w_bar = max(factor, round(w / factor) * factor)
+    if h_bar * w_bar > max_pixels:
+        beta = math.sqrt((h * w) / max_pixels)
+        h_bar = max(factor, math.floor(h / beta / factor) * factor)
+        w_bar = max(factor, math.floor(w / beta / factor) * factor)
+    elif h_bar * w_bar < min_pixels:
+        beta = math.sqrt(min_pixels / (h * w))
+        h_bar = max(factor, math.ceil(h * beta / factor) * factor)
+        w_bar = max(factor, math.ceil(w * beta / factor) * factor)
+    return h_bar, w_bar
+
+
+def _preresize_for_vl(image_path: Path, max_pixels: int) -> tuple[bytes, int, int, int, int]:
+    """Resize the page so it matches Qwen-VL's internal smart_resize output.
+    Returns (png_bytes, orig_w, orig_h, new_w, new_h)."""
     import io
     from PIL import Image
 
     with Image.open(image_path) as im:
         im = im.convert("RGB")
         orig_w, orig_h = im.size
-        longest = max(orig_w, orig_h)
-        if longest <= max_side:
+        new_h, new_w = _smart_resize(orig_h, orig_w, max_pixels=max_pixels)
+        if (new_w, new_h) == (orig_w, orig_h):
             buf = io.BytesIO()
             im.save(buf, format="PNG")
             return buf.getvalue(), orig_w, orig_h, orig_w, orig_h
-        scale = max_side / longest
-        new_w = max(1, int(round(orig_w * scale)))
-        new_h = max(1, int(round(orig_h * scale)))
         resized = im.resize((new_w, new_h), Image.LANCZOS)
         buf = io.BytesIO()
         resized.save(buf, format="PNG")
@@ -237,7 +253,7 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
     """Call Qwen2.5-VL. Returns (chunks, elapsed_seconds). Each chunk is {text, bbox:[x,y,w,h]}
     in the ORIGINAL image's pixel coordinates."""
     png_bytes, orig_w, orig_h, sent_w, sent_h = _preresize_for_vl(
-        image_path, max_side=settings.vl_input_max_side
+        image_path, max_pixels=settings.vl_max_pixels
     )
     scale_x = orig_w / sent_w
     scale_y = orig_h / sent_h

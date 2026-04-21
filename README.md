@@ -96,7 +96,7 @@ Backend settings (env vars or `backend/.env`):
 | `DATABASE_URL` | `sqlite:///./storage/pii.db` | SQLAlchemy URL |
 | `STORAGE_DIR` | `./storage` | Local file storage root |
 | `PDF_DPI` | `150` | Rasterization DPI |
-| `VL_INPUT_MAX_SIDE` | `1280` | Pre-resize longest edge before sending to VL. Bboxes are scaled back to original. |
+| `VL_MAX_PIXELS` | `802816` | Cap total pixels sent to VL (matches Qwen's smart_resize). Larger = better OCR, more VRAM. Upstream default is 1003520. |
 | `VL_NUM_CTX` | `8192` | Ollama context window for VL. Safe default on macOS Metal; raise with caution. |
 | `VL_NUM_PREDICT` | `4096` | Max new tokens for VL. Raise if output is cut off. |
 | `PII_NUM_CTX` | `8192` | Context window for Qwen3 PII call. |

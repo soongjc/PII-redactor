@@ -12,10 +12,11 @@ class Settings(BaseSettings):
     storage_dir: str = "./storage"
     pdf_dpi: int = 150
 
-    # Pre-resize page images to this max edge (longest side, px) before sending to VL.
-    # Qwen-VL internally resizes images and returns bboxes in THAT space, so we resize
-    # ourselves to make the math deterministic. Smaller also = faster + less VRAM.
-    vl_input_max_side: int = 1280
+    # Pre-resize page images so they match Qwen-VL's internal smart_resize output.
+    # Total pixels are capped at this; dims rounded to multiples of 28 (Qwen's
+    # vision patch/merge). Qwen2.5-VL's upstream default is 1003520 (1280 visual
+    # tokens). 802816 = 1024 tokens is a faster/less-VRAM alternative.
+    vl_max_pixels: int = 802816
 
     # Ollama generation knobs. 8192 is a safe ceiling on macOS Metal; larger
     # values trigger a llama.cpp GGML_ASSERT crash with Qwen-VL on some builds.
