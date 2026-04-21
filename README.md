@@ -97,10 +97,10 @@ Backend settings (env vars or `backend/.env`):
 | `STORAGE_DIR` | `./storage` | Local file storage root |
 | `PDF_DPI` | `150` | Rasterization DPI |
 | `VL_INPUT_MAX_SIDE` | `1280` | Pre-resize longest edge before sending to VL. Bboxes are scaled back to original. |
-| `VL_NUM_CTX` | `16384` | Ollama context window for VL. Raise if pages truncate. |
-| `VL_NUM_PREDICT` | `16384` | Max new tokens for VL. Raise if output is cut off. |
+| `VL_NUM_CTX` | `8192` | Ollama context window for VL. Safe default on macOS Metal; raise with caution. |
+| `VL_NUM_PREDICT` | `4096` | Max new tokens for VL. Raise if output is cut off. |
 | `PII_NUM_CTX` | `8192` | Context window for Qwen3 PII call. |
-| `PII_NUM_PREDICT` | `4096` | Max new tokens for Qwen3. |
+| `PII_NUM_PREDICT` | `2048` | Max new tokens for Qwen3. |
 | `REFINE_BBOXES` | `true` | Tighten VL bboxes to actual text content (PIL threshold). |
 | `REFINE_EXPAND_PCT` | `0.10` | Expand VL bbox by this % before tightening (recovers missing edges). |
 | `REFINE_THRESHOLD` | `180` | Grayscale threshold: pixels darker than this count as text. |

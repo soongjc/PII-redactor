@@ -17,11 +17,13 @@ class Settings(BaseSettings):
     # ourselves to make the math deterministic. Smaller also = faster + less VRAM.
     vl_input_max_side: int = 1280
 
-    # Ollama generation knobs. Raise these if VL output is truncated on large pages.
-    vl_num_ctx: int = 16384        # context window (tokens)
-    vl_num_predict: int = 16384    # max new tokens
+    # Ollama generation knobs. 8192 is a safe ceiling on macOS Metal; larger
+    # values trigger a llama.cpp GGML_ASSERT crash with Qwen-VL on some builds.
+    # If VL output truncates on dense pages, raise gradually and watch ollama logs.
+    vl_num_ctx: int = 8192         # context window (tokens)
+    vl_num_predict: int = 4096     # max new tokens
     pii_num_ctx: int = 8192
-    pii_num_predict: int = 4096
+    pii_num_predict: int = 2048
 
     # Bbox calibration.
     refine_bboxes: bool = True           # tighten VL bboxes to dark-pixel content
