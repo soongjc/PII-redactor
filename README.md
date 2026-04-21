@@ -3,7 +3,7 @@
 Upload a PDF (scanned or searchable), review detected PII page-by-page, and save
 masked images plus structured PII records to a local SQLite database.
 
-- **Backend**: FastAPI + SQLModel/SQLite + Pillow + `pdf2image` (Poppler)
+- **Backend**: FastAPI + SQLModel/SQLite + Pillow + PyMuPDF (no Poppler needed)
 - **Vision (OCR with bboxes)**: `qwen2.5vl:7b` via Ollama
 - **PII tagging (text)**: `qwen3:8b` via Ollama
 - **Frontend**: SvelteKit (Svelte 5) per-page review UI with manual edit/draw
@@ -12,7 +12,7 @@ masked images plus structured PII records to a local SQLite database.
 
 For each page:
 
-1. PDF page is rasterized to PNG (`pdf2image`, configurable DPI).
+1. PDF page is rasterized to PNG (PyMuPDF, configurable DPI).
 2. Qwen2.5-VL receives the image and returns `{text, bbox}` chunks (JSON mode).
 3. Qwen3 receives the joined text and returns `{type, text}` PII spans.
 4. Each PII text is matched back to one or more consecutive chunks; the union
@@ -44,9 +44,6 @@ backend/storage/
 
 - Python 3.10+
 - Node 18+
-- [Poppler](https://poppler.freedesktop.org/) on `PATH` (required by `pdf2image`)
-  - macOS: `brew install poppler`
-  - Debian/Ubuntu: `sudo apt-get install poppler-utils`
 - [Ollama](https://ollama.com/) running locally with the two models pulled:
   ```bash
   ollama pull qwen2.5vl:7b
