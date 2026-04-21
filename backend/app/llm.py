@@ -120,11 +120,30 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
         err_msg = f"[{label}] Ollama returned {resp.status_code}: {body}"
         logger.warning(err_msg)
         print(err_msg, flush=True)
-        raise LLMError(
-            f"Ollama {resp.status_code} from model '{model}'. "
-            f"If you set a non-vision model as VL_MODEL, switch to a multimodal tag "
-            f"like qwen2.5vl:7b. Body: {body}"
-        )
+
+        body_l = body.lower()
+        if "does not support images" in body_l or "not a multimodal" in body_l:
+            hint = (
+                f"Model '{model}' is not multimodal. Set VL_MODEL to a vision tag "
+                f"(e.g. qwen2.5vl:7b, llama3.2-vision:11b, minicpm-v)."
+            )
+        elif "not found" in body_l or "pull" in body_l:
+            hint = f"Model '{model}' isn't pulled. Run: ollama pull {model}"
+        elif any(
+            s in body for s in ("GGML_ASSERT", "SIGABRT", "panic", "SIGSEGV", "out of memory")
+        ):
+            hint = (
+                "Ollama/llama.cpp runtime crashed. Common fixes: "
+                "update Ollama (`brew upgrade ollama` or redownload the app), "
+                "lower VL_NUM_CTX (e.g. 8192 or 4096), "
+                "lower VL_INPUT_MAX_SIDE (e.g. 896), "
+                "re-pull the model (`ollama pull " + str(model) + "`), "
+                "or try `OLLAMA_FLASH_ATTENTION=0 ollama serve`."
+            )
+        else:
+            hint = "See Ollama server logs for details."
+
+        raise LLMError(f"Ollama {resp.status_code} from '{model}'. {hint} Body: {body}")
 
     data = resp.json()
     content = data.get("message", {}).get("content", "")
