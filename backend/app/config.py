@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     storage_dir: str = "./storage"
     pdf_dpi: int = 150
 
+    # Pre-resize page images to this max edge (longest side, px) before sending to VL.
+    # Qwen-VL internally resizes images and returns bboxes in THAT space, so we resize
+    # ourselves to make the math deterministic. Smaller also = faster + less VRAM.
+    vl_input_max_side: int = 1280
+
     # Ollama generation knobs. Raise these if VL output is truncated on large pages.
     vl_num_ctx: int = 16384        # context window (tokens)
     vl_num_predict: int = 16384    # max new tokens

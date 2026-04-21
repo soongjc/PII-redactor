@@ -187,13 +187,47 @@ def _extract_regions_list(parsed: Any) -> list[dict[str, Any]]:
     return []
 
 
-def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
-    """Call Qwen2.5-VL. Returns (chunks, elapsed_seconds). Each chunk is {text, bbox:[x,y,w,h]}."""
-    from PIL import Image
-    with Image.open(image_path) as im:
-        img_w, img_h = im.size
+def _preresize_for_vl(image_path: Path, max_side: int) -> tuple[bytes, int, int, int, int]:
+    """Resize the page image so longest side == max_side. Returns (png_bytes, orig_w, orig_h, new_w, new_h).
 
-    b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    Qwen-VL resizes images internally ("smart_resize") and returns bboxes in
+    THAT resized space — not the original. By resizing ourselves to a known
+    size we avoid having to replicate the model-specific preprocessor.
+    """
+    import io
+    from PIL import Image
+
+    with Image.open(image_path) as im:
+        im = im.convert("RGB")
+        orig_w, orig_h = im.size
+        longest = max(orig_w, orig_h)
+        if longest <= max_side:
+            buf = io.BytesIO()
+            im.save(buf, format="PNG")
+            return buf.getvalue(), orig_w, orig_h, orig_w, orig_h
+        scale = max_side / longest
+        new_w = max(1, int(round(orig_w * scale)))
+        new_h = max(1, int(round(orig_h * scale)))
+        resized = im.resize((new_w, new_h), Image.LANCZOS)
+        buf = io.BytesIO()
+        resized.save(buf, format="PNG")
+        return buf.getvalue(), orig_w, orig_h, new_w, new_h
+
+
+def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
+    """Call Qwen2.5-VL. Returns (chunks, elapsed_seconds). Each chunk is {text, bbox:[x,y,w,h]}
+    in the ORIGINAL image's pixel coordinates."""
+    png_bytes, orig_w, orig_h, sent_w, sent_h = _preresize_for_vl(
+        image_path, max_side=settings.vl_input_max_side
+    )
+    scale_x = orig_w / sent_w
+    scale_y = orig_h / sent_h
+    logger.info(
+        "[VL] sending %dx%d (from %dx%d); bbox scale x=%.3f y=%.3f",
+        sent_w, sent_h, orig_w, orig_h, scale_x, scale_y,
+    )
+
+    b64 = base64.b64encode(png_bytes).decode("ascii")
     payload = {
         "model": settings.vl_model,
         "messages": [
@@ -215,6 +249,9 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
         logger.warning("[VL] JSON parse failed: %s | raw: %s", e, _preview(content, 2000))
         return [], elapsed
 
+    # bbox_2d / bbox / box are interpreted in the coord space of the image we SENT.
+    img_w, img_h = sent_w, sent_h
+
     regions = _extract_regions_list(parsed)
     out: list[dict[str, Any]] = []
     for r in regions:
@@ -232,16 +269,29 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
         coerced = _coerce_bbox(bbox, fmt=fmt, img_w=img_w, img_h=img_h)
         if coerced is None:
             continue
-        x, y, w, h = coerced
-        out.append({"text": text, "bbox": [x, y, w, h]})
+        sx, sy, sw, sh = coerced
+        # Scale from sent-image coords back to original-image coords.
+        ox = int(round(sx * scale_x))
+        oy = int(round(sy * scale_y))
+        ow = max(1, int(round(sw * scale_x)))
+        oh = max(1, int(round(sh * scale_y)))
+        # Clip to original image bounds.
+        ox = max(0, min(ox, orig_w))
+        oy = max(0, min(oy, orig_h))
+        ow = max(1, min(ow, orig_w - ox))
+        oh = max(1, min(oh, orig_h - oy))
+        out.append({"text": text, "bbox": [ox, oy, ow, oh]})
 
     if not out:
         logger.warning(
-            "[VL] parsed 0 regions from response. image=%dx%d | raw: %s",
-            img_w, img_h, _preview(content, 2000),
+            "[VL] parsed 0 regions from response. sent=%dx%d orig=%dx%d | raw: %s",
+            sent_w, sent_h, orig_w, orig_h, _preview(content, 2000),
         )
     else:
-        logger.info("[VL] parsed %d chunks (image %dx%d)", len(out), img_w, img_h)
+        logger.info(
+            "[VL] parsed %d chunks (sent %dx%d, original %dx%d)",
+            len(out), sent_w, sent_h, orig_w, orig_h,
+        )
     return out, elapsed
 
 
