@@ -1,15 +1,16 @@
 from datetime import datetime
 from pathlib import Path
+import json
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlmodel import Session, select
 
 from ..config import settings
 from ..db import get_session
 from ..models import Document, Page, PIIEntity
 from ..pdf_utils import rasterize_pdf
-from ..pipeline import detect_page_pii
+from ..pipeline import detect_page_pii_stream
 from ..masking import render_masked, combine_pdf
 from ..schemas import (
     ConfirmRequest,
@@ -109,8 +110,9 @@ def get_masked_image(doc_id: int, n: int) -> FileResponse:
     return FileResponse(path, media_type="image/png")
 
 
-@router.post("/{doc_id}/pages/{n}/detect", response_model=DetectResponse)
-def detect_page(doc_id: int, n: int, session: Session = Depends(get_session)) -> DetectResponse:
+@router.post("/{doc_id}/pages/{n}/detect")
+def detect_page(doc_id: int, n: int, session: Session = Depends(get_session)):
+    """Streams NDJSON stage events (vl_ocr → pii_tag → done)."""
     page = session.exec(
         select(Page).where(Page.document_id == doc_id, Page.page_number == n)
     ).first()
@@ -119,12 +121,26 @@ def detect_page(doc_id: int, n: int, session: Session = Depends(get_session)) ->
     image = _page_image(doc_id, n)
     if not image.exists():
         raise HTTPException(status_code=404, detail="Page image missing on disk")
-    raw_entities = detect_page_pii(image)
-    return DetectResponse(
-        page_number=page.page_number,
-        width=page.width,
-        height=page.height,
-        entities=[EntityOut(**e) for e in raw_entities],
+
+    page_number = page.page_number
+    width = page.width
+    height = page.height
+
+    def gen():
+        for event in detect_page_pii_stream(image):
+            if event.get("stage") == "done":
+                event = {
+                    **event,
+                    "page_number": page_number,
+                    "width": width,
+                    "height": height,
+                }
+            yield json.dumps(event) + "\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
 
 

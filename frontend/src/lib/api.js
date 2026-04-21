@@ -22,8 +22,45 @@ export async function getDocument(id) {
   return jsonOrThrow(await fetch(`${BASE}/documents/${id}`));
 }
 
-export async function detectPage(id, n) {
-  return jsonOrThrow(await fetch(`${BASE}/documents/${id}/pages/${n}/detect`, { method: 'POST' }));
+/**
+ * Stream NDJSON stage events from /detect. Calls `onEvent(event)` for each
+ * parsed event. Pass an `AbortSignal` via opts.signal to cancel.
+ */
+export async function detectPageStream(id, n, onEvent, opts = {}) {
+  const res = await fetch(`${BASE}/documents/${id}/pages/${n}/detect`, {
+    method: 'POST',
+    signal: opts.signal
+  });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) msg = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+    } catch {}
+    throw new Error(msg);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line) continue;
+      try {
+        onEvent(JSON.parse(line));
+      } catch (e) {
+        console.warn('Bad NDJSON line:', line);
+      }
+    }
+  }
+  if (buf.trim()) {
+    try { onEvent(JSON.parse(buf.trim())); } catch {}
+  }
 }
 
 export async function confirmPage(id, n, entities) {

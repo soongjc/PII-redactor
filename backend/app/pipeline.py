@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from . import llm
 
@@ -16,10 +16,6 @@ def _normalize(s: str) -> str:
 def _find_chunk_span(
     chunks: list[dict[str, Any]], needle: str, skip: set[int]
 ) -> list[int] | None:
-    """Find consecutive chunk indices whose joined text contains `needle` (normalized).
-
-    Skips any starting position whose chunk is already claimed.
-    """
     target = _normalize(needle)
     if not target:
         return None
@@ -53,18 +49,7 @@ def _union_bbox(chunks: list[dict[str, Any]], indices: list[int]) -> tuple[int, 
     return x1, y1, x2 - x1, y2 - y1
 
 
-def detect_page_pii(image_path: Path) -> list[dict[str, Any]]:
-    """Run the full VL + PII pipeline for a single page image.
-
-    Returns: [{type, text, x, y, w, h}, ...]
-    """
-    chunks = llm.vl_extract_chunks(image_path)
-    if not chunks:
-        return []
-
-    full_text = CHUNK_SEP.join(c["text"] for c in chunks)
-    pii = llm.pii_tag_text(full_text)
-
+def _stitch(chunks: list[dict[str, Any]], pii: list[dict[str, str]]) -> list[dict[str, Any]]:
     used: set[int] = set()
     out: list[dict[str, Any]] = []
     for ent in pii:
@@ -75,3 +60,51 @@ def detect_page_pii(image_path: Path) -> list[dict[str, Any]]:
         out.append({"type": ent["type"], "text": ent["text"], "x": x, "y": y, "w": w, "h": h})
         used.update(span)
     return out
+
+
+def detect_page_pii(image_path: Path) -> list[dict[str, Any]]:
+    """Non-streaming convenience: run full pipeline and return entities."""
+    chunks, _ = llm.vl_extract_chunks(image_path)
+    if not chunks:
+        return []
+    full_text = CHUNK_SEP.join(c["text"] for c in chunks)
+    pii, _ = llm.pii_tag_text(full_text)
+    return _stitch(chunks, pii)
+
+
+def detect_page_pii_stream(image_path: Path) -> Iterator[dict[str, Any]]:
+    """Yield stage events for the detection pipeline.
+
+    Events:
+      {"stage": "vl_ocr", "status": "start"}
+      {"stage": "vl_ocr", "status": "done", "count": N, "elapsed_ms": ms}
+      {"stage": "pii_tag", "status": "start", "text_preview": "..."}
+      {"stage": "pii_tag", "status": "done", "count": N, "elapsed_ms": ms}
+      {"stage": "done", "entities": [...]}
+    """
+    yield {"stage": "vl_ocr", "status": "start", "model": "VL (OCR)"}
+    chunks, vl_ms = llm.vl_extract_chunks(image_path)
+    yield {
+        "stage": "vl_ocr",
+        "status": "done",
+        "count": len(chunks),
+        "elapsed_ms": int(vl_ms * 1000),
+    }
+
+    if not chunks:
+        yield {"stage": "done", "entities": []}
+        return
+
+    full_text = CHUNK_SEP.join(c["text"] for c in chunks)
+    preview = full_text if len(full_text) <= 240 else full_text[:240] + "…"
+    yield {"stage": "pii_tag", "status": "start", "model": "PII (Qwen3)", "text_preview": preview}
+    pii, pii_ms = llm.pii_tag_text(full_text)
+    yield {
+        "stage": "pii_tag",
+        "status": "done",
+        "count": len(pii),
+        "elapsed_ms": int(pii_ms * 1000),
+    }
+
+    entities = _stitch(chunks, pii)
+    yield {"stage": "done", "entities": entities, "matched": len(entities), "pii_found": len(pii)}

@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from .config import settings
+
+logger = logging.getLogger("pii.llm")
 
 _CHAT_TIMEOUT = httpx.Timeout(600.0, connect=10.0)
 
@@ -41,7 +45,9 @@ Rules:
 """
 
 
-PII_PROMPT_TEMPLATE = """You are a PII detection engine. Identify Personally Identifiable Information in the input text.
+# /no_think disables Qwen3's internal chain-of-thought which otherwise adds a lot of latency.
+PII_PROMPT_TEMPLATE = """/no_think
+You are a PII detection engine. Identify Personally Identifiable Information in the input text.
 
 Allowed PII types (use these exact strings):
 NAME, EMAIL, PHONE, ADDRESS, SSN_NRIC, DOB, CREDIT_CARD, BANK_ACCOUNT, IP
@@ -65,11 +71,11 @@ Input text:
 def _strip_to_json(raw: str) -> str:
     """Best-effort: strip code fences / surrounding text and return the JSON object substring."""
     s = raw.strip()
-    # Strip ```json ... ``` fences if present.
+    # Drop Qwen3 <think>...</think> blocks if they somehow sneak through.
+    s = re.sub(r"<think>.*?</think>", "", s, flags=re.DOTALL).strip()
     fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", s, flags=re.DOTALL)
     if fence:
         s = fence.group(1).strip()
-    # Find first '{' and matching last '}' (greedy).
     start = s.find("{")
     end = s.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -84,33 +90,45 @@ def _safe_json_loads(raw: str) -> dict[str, Any]:
         return json.loads(_strip_to_json(raw))
 
 
-def _post_chat(payload: dict[str, Any]) -> dict[str, Any]:
+def _preview(s: str, n: int = 400) -> str:
+    s = s.replace("\n", " ")
+    return s if len(s) <= n else s[:n] + f"... (+{len(s) - n} chars)"
+
+
+def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], float]:
     url = f"{settings.ollama_host.rstrip('/')}/api/chat"
+    model = payload.get("model")
+    logger.info("[%s] -> %s model=%s", label, url, model)
+    t0 = time.time()
     with httpx.Client(timeout=_CHAT_TIMEOUT) as client:
         resp = client.post(url, json=payload)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+    elapsed = time.time() - t0
+    content = data.get("message", {}).get("content", "")
+    logger.info("[%s] <- %.2fs | response: %s", label, elapsed, _preview(content))
+    return data, elapsed
 
 
-def vl_extract_chunks(image_path: Path) -> list[dict[str, Any]]:
-    """Call Qwen2.5-VL to extract {text, bbox} chunks from a page image."""
+def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
+    """Call Qwen2.5-VL. Returns (chunks, elapsed_seconds)."""
     b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
     payload = {
         "model": settings.vl_model,
         "messages": [
-            {
-                "role": "user",
-                "content": VL_PROMPT,
-                "images": [b64],
-            }
+            {"role": "user", "content": VL_PROMPT, "images": [b64]},
         ],
         "stream": False,
         "format": "json",
         "options": {"temperature": 0.0},
     }
-    data = _post_chat(payload)
+    data, elapsed = _post_chat(payload, label="VL")
     content = data.get("message", {}).get("content", "")
-    parsed = _safe_json_loads(content)
+    try:
+        parsed = _safe_json_loads(content)
+    except json.JSONDecodeError as e:
+        logger.warning("[VL] JSON parse failed: %s", e)
+        return [], elapsed
     chunks = parsed.get("chunks", []) if isinstance(parsed, dict) else []
     out: list[dict[str, Any]] = []
     for c in chunks:
@@ -127,13 +145,14 @@ def vl_extract_chunks(image_path: Path) -> list[dict[str, Any]]:
         if w <= 0 or h <= 0:
             continue
         out.append({"text": text, "bbox": [x, y, w, h]})
-    return out
+    logger.info("[VL] parsed %d chunks", len(out))
+    return out, elapsed
 
 
-def pii_tag_text(text: str) -> list[dict[str, str]]:
-    """Call Qwen3 to identify PII spans inside `text`. Returns [{type, text}]."""
+def pii_tag_text(text: str) -> tuple[list[dict[str, str]], float]:
+    """Call Qwen3. Returns (entities, elapsed_seconds)."""
     if not text.strip():
-        return []
+        return [], 0.0
     payload = {
         "model": settings.pii_model,
         "messages": [
@@ -143,9 +162,13 @@ def pii_tag_text(text: str) -> list[dict[str, str]]:
         "format": "json",
         "options": {"temperature": 0.0},
     }
-    data = _post_chat(payload)
+    data, elapsed = _post_chat(payload, label="PII")
     content = data.get("message", {}).get("content", "")
-    parsed = _safe_json_loads(content)
+    try:
+        parsed = _safe_json_loads(content)
+    except json.JSONDecodeError as e:
+        logger.warning("[PII] JSON parse failed: %s", e)
+        return [], elapsed
     entities = parsed.get("entities", []) if isinstance(parsed, dict) else []
     out: list[dict[str, str]] = []
     for e in entities:
@@ -156,4 +179,5 @@ def pii_tag_text(text: str) -> list[dict[str, str]]:
         if not etype or not etext or etype not in PII_TYPES:
             continue
         out.append({"type": etype, "text": etext})
-    return out
+    logger.info("[PII] parsed %d entities", len(out))
+    return out, elapsed
