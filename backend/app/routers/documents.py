@@ -174,7 +174,12 @@ def confirm_page(
         saved.append(row)
 
     # Render mask now so the user sees the result of THIS confirmation.
-    render_masked(_page_image(doc_id, n), _masked_image(doc_id, n), body.entities)
+    render_masked(
+        _page_image(doc_id, n),
+        _masked_image(doc_id, n),
+        body.entities,
+        padding=settings.mask_padding_px,
+    )
 
     page.confirmed = True
     page.confirmed_at = datetime.utcnow()

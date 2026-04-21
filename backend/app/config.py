@@ -12,6 +12,18 @@ class Settings(BaseSettings):
     storage_dir: str = "./storage"
     pdf_dpi: int = 150
 
+    # Ollama generation knobs. Raise these if VL output is truncated on large pages.
+    vl_num_ctx: int = 16384        # context window (tokens)
+    vl_num_predict: int = 16384    # max new tokens
+    pii_num_ctx: int = 8192
+    pii_num_predict: int = 4096
+
+    # Bbox calibration.
+    refine_bboxes: bool = True           # tighten VL bboxes to dark-pixel content
+    refine_expand_pct: float = 0.10      # expand VL bbox by this % before tightening
+    refine_threshold: int = 180          # pixel value: < threshold is "text"
+    mask_padding_px: int = 2             # extra pixels around each bbox when masking
+
     @property
     def storage_path(self) -> Path:
         p = Path(self.storage_dir).resolve()

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import llm
+from .bbox_refine import refine_entities
 
 CHUNK_SEP = " "
 
@@ -115,4 +116,5 @@ def detect_page_pii_stream(image_path: Path) -> Iterator[dict[str, Any]]:
     }
 
     entities = _stitch(chunks, pii)
+    entities = refine_entities(image_path, entities)
     yield {"stage": "done", "entities": entities, "matched": len(entities), "pii_found": len(pii)}

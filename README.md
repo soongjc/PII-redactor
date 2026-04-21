@@ -96,6 +96,14 @@ Backend settings (env vars or `backend/.env`):
 | `DATABASE_URL` | `sqlite:///./storage/pii.db` | SQLAlchemy URL |
 | `STORAGE_DIR` | `./storage` | Local file storage root |
 | `PDF_DPI` | `150` | Rasterization DPI |
+| `VL_NUM_CTX` | `16384` | Ollama context window for VL. Raise if pages truncate. |
+| `VL_NUM_PREDICT` | `16384` | Max new tokens for VL. Raise if output is cut off. |
+| `PII_NUM_CTX` | `8192` | Context window for Qwen3 PII call. |
+| `PII_NUM_PREDICT` | `4096` | Max new tokens for Qwen3. |
+| `REFINE_BBOXES` | `true` | Tighten VL bboxes to actual text content (PIL threshold). |
+| `REFINE_EXPAND_PCT` | `0.10` | Expand VL bbox by this % before tightening (recovers missing edges). |
+| `REFINE_THRESHOLD` | `180` | Grayscale threshold: pixels darker than this count as text. |
+| `MASK_PADDING_PX` | `2` | Extra pixels around each bbox when drawing the black mask. |
 
 ## Notes & limitations
 

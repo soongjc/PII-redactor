@@ -201,7 +201,11 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
         ],
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0.0, "num_predict": 8192},
+        "options": {
+            "temperature": 0.0,
+            "num_ctx": settings.vl_num_ctx,
+            "num_predict": settings.vl_num_predict,
+        },
     }
     data, elapsed = _post_chat(payload, label="VL")
     content = data.get("message", {}).get("content", "")
@@ -252,7 +256,11 @@ def pii_tag_text(text: str) -> tuple[list[dict[str, str]], float]:
         ],
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0.0},
+        "options": {
+            "temperature": 0.0,
+            "num_ctx": settings.pii_num_ctx,
+            "num_predict": settings.pii_num_predict,
+        },
     }
     data, elapsed = _post_chat(payload, label="PII")
     content = data.get("message", {}).get("content", "")
