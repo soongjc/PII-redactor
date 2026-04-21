@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.env
+
+# Storage (local, runtime)
+backend/storage/uploads/
+backend/storage/pages/
+backend/storage/masked/
+backend/storage/*.db
+
+# Node / SvelteKit
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+frontend/.vite/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
