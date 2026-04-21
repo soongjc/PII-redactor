@@ -127,15 +127,18 @@ def detect_page(doc_id: int, n: int, session: Session = Depends(get_session)):
     height = page.height
 
     def gen():
-        for event in detect_page_pii_stream(image):
-            if event.get("stage") == "done":
-                event = {
-                    **event,
-                    "page_number": page_number,
-                    "width": width,
-                    "height": height,
-                }
-            yield json.dumps(event) + "\n"
+        try:
+            for event in detect_page_pii_stream(image):
+                if event.get("stage") == "done":
+                    event = {
+                        **event,
+                        "page_number": page_number,
+                        "width": width,
+                        "height": height,
+                    }
+                yield json.dumps(event) + "\n"
+        except Exception as exc:  # noqa: BLE001 - stream to UI instead of 500
+            yield json.dumps({"stage": "error", "where": "pipeline", "message": str(exc)}) + "\n"
 
     return StreamingResponse(
         gen(),

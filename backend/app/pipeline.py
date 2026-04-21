@@ -83,7 +83,11 @@ def detect_page_pii_stream(image_path: Path) -> Iterator[dict[str, Any]]:
       {"stage": "done", "entities": [...]}
     """
     yield {"stage": "vl_ocr", "status": "start", "model": "VL (OCR)"}
-    chunks, vl_ms = llm.vl_extract_chunks(image_path)
+    try:
+        chunks, vl_ms = llm.vl_extract_chunks(image_path)
+    except llm.LLMError as e:
+        yield {"stage": "error", "where": "vl_ocr", "message": str(e)}
+        return
     yield {
         "stage": "vl_ocr",
         "status": "done",
@@ -98,7 +102,11 @@ def detect_page_pii_stream(image_path: Path) -> Iterator[dict[str, Any]]:
     full_text = CHUNK_SEP.join(c["text"] for c in chunks)
     preview = full_text if len(full_text) <= 240 else full_text[:240] + "…"
     yield {"stage": "pii_tag", "status": "start", "model": "PII (Qwen3)", "text_preview": preview}
-    pii, pii_ms = llm.pii_tag_text(full_text)
+    try:
+        pii, pii_ms = llm.pii_tag_text(full_text)
+    except llm.LLMError as e:
+        yield {"stage": "error", "where": "pii_tag", "message": str(e)}
+        return
     yield {
         "stage": "pii_tag",
         "status": "done",

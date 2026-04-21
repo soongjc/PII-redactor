@@ -95,6 +95,10 @@ def _preview(s: str, n: int = 400) -> str:
     return s if len(s) <= n else s[:n] + f"... (+{len(s) - n} chars)"
 
 
+class LLMError(RuntimeError):
+    """Raised when the upstream LLM call fails in a way we can display."""
+
+
 def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], float]:
     url = f"{settings.ollama_host.rstrip('/')}/api/chat"
     model = payload.get("model")
@@ -102,11 +106,27 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
     logger.info(msg)
     print(msg, flush=True)
     t0 = time.time()
-    with httpx.Client(timeout=_CHAT_TIMEOUT) as client:
-        resp = client.post(url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+    try:
+        with httpx.Client(timeout=_CHAT_TIMEOUT) as client:
+            resp = client.post(url, json=payload)
+    except httpx.ConnectError as e:
+        raise LLMError(f"Cannot reach Ollama at {url}: {e}") from e
+    except httpx.TimeoutException as e:
+        raise LLMError(f"Ollama request timed out: {e}") from e
+
     elapsed = time.time() - t0
+    if resp.status_code >= 400:
+        body = resp.text[:500]
+        err_msg = f"[{label}] Ollama returned {resp.status_code}: {body}"
+        logger.warning(err_msg)
+        print(err_msg, flush=True)
+        raise LLMError(
+            f"Ollama {resp.status_code} from model '{model}'. "
+            f"If you set a non-vision model as VL_MODEL, switch to a multimodal tag "
+            f"like qwen2.5vl:7b. Body: {body}"
+        )
+
+    data = resp.json()
     content = data.get("message", {}).get("content", "")
     msg = f"[{label}] <- {elapsed:.2f}s | response: {_preview(content)}"
     logger.info(msg)

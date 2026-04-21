@@ -72,6 +72,9 @@
         pageNum,
         (evt) => {
           stageLog = [...stageLog, { ...evt, ts: Date.now() }];
+          if (evt.stage === 'error') {
+            error = `${evt.where ? evt.where + ': ' : ''}${evt.message}`;
+          }
           if (evt.stage === 'done' && Array.isArray(evt.entities)) {
             entities = evt.entities.map((e) => ({ ...e, _enabled: true }));
           }
@@ -195,6 +198,7 @@
     if (evt.stage === 'done') return `Matched ${evt.matched ?? 0}/${evt.pii_found ?? 0} to bboxes`;
     if (evt.stage === 'cancelled') return 'Cancelled';
     if (evt.stage === 'starting') return 'Starting…';
+    if (evt.stage === 'error') return `Error (${evt.where ?? 'pipeline'}): ${evt.message}`;
     return `${evt.stage} ${evt.status ?? ''}`;
   }
 </script>
