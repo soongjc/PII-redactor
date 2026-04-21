@@ -31,16 +31,16 @@ PII_TYPES = [
 ]
 
 
-VL_PROMPT = """You are an OCR engine. Extract every visible text region from the image.
+VL_PROMPT = """Extract every visible text region from the image.
 
 Return ONLY a JSON object with this exact shape:
-{"chunks": [{"text": "...", "bbox": [x, y, w, h]}, ...]}
+{"regions": [{"bbox_2d": [x1, y1, x2, y2], "text_content": "..."}, ...]}
 
 Rules:
-- bbox uses pixel coordinates of the input image: x, y are top-left; w, h are width/height.
+- bbox_2d uses pixel coordinates of the input image (NOT normalized): x1,y1 is the top-left corner, x2,y2 is the bottom-right corner.
 - Group text into the smallest semantically meaningful units (a name, a phone number, an email, a single line of an address, a date). Do not merge unrelated lines.
-- Preserve original casing, spacing inside the chunk, punctuation.
-- If the image has no text, return {"chunks": []}.
+- Preserve original casing, punctuation, and spacing inside the chunk.
+- If the image has no text, return {"regions": []}.
 - Do NOT include any prose, markdown, code fences, or explanations. JSON only.
 """
 
@@ -110,8 +110,65 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
     return data, elapsed
 
 
+def _coerce_bbox(
+    bbox: Any, *, fmt: str, img_w: int, img_h: int
+) -> tuple[int, int, int, int] | None:
+    """Convert `bbox` to (x, y, w, h) pixel ints.
+
+    fmt: "xyxy" (x1,y1,x2,y2) or "xywh" (x,y,w,h). Normalized 0-1000 values
+    (Qwen-VL quirk) are rescaled to pixels when detected.
+    """
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        a, b, c, d = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return None
+
+    mx = max(a, b, c, d)
+    if mx <= 1000 and mx > max(img_w, img_h) * 1.1:
+        a = a / 1000.0 * img_w
+        b = b / 1000.0 * img_h
+        c = c / 1000.0 * img_w
+        d = d / 1000.0 * img_h
+
+    if fmt == "xyxy":
+        x, y, w, h = a, b, c - a, d - b
+    else:  # xywh
+        x, y, w, h = a, b, c, d
+
+    x, y, w, h = int(round(x)), int(round(y)), int(round(w)), int(round(h))
+    if w <= 0 or h <= 0:
+        return None
+    x = max(0, min(x, img_w))
+    y = max(0, min(y, img_h))
+    w = max(1, min(w, img_w - x))
+    h = max(1, min(h, img_h - y))
+    return x, y, w, h
+
+
+def _extract_regions_list(parsed: Any) -> list[dict[str, Any]]:
+    """Find the list of regions from various shapes Qwen-VL returns."""
+    if isinstance(parsed, list):
+        return [r for r in parsed if isinstance(r, dict)]
+    if not isinstance(parsed, dict):
+        return []
+    for key in ("regions", "chunks", "text_regions", "results", "data", "items"):
+        v = parsed.get(key)
+        if isinstance(v, list):
+            return [r for r in v if isinstance(r, dict)]
+    # Fallback: the dict itself might be one region, or values may contain it.
+    if "bbox_2d" in parsed or "bbox" in parsed or "box" in parsed:
+        return [parsed]
+    return []
+
+
 def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
-    """Call Qwen2.5-VL. Returns (chunks, elapsed_seconds)."""
+    """Call Qwen2.5-VL. Returns (chunks, elapsed_seconds). Each chunk is {text, bbox:[x,y,w,h]}."""
+    from PIL import Image
+    with Image.open(image_path) as im:
+        img_w, img_h = im.size
+
     b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
     payload = {
         "model": settings.vl_model,
@@ -120,32 +177,43 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
         ],
         "stream": False,
         "format": "json",
-        "options": {"temperature": 0.0},
+        "options": {"temperature": 0.0, "num_predict": 8192},
     }
     data, elapsed = _post_chat(payload, label="VL")
     content = data.get("message", {}).get("content", "")
     try:
         parsed = _safe_json_loads(content)
     except json.JSONDecodeError as e:
-        logger.warning("[VL] JSON parse failed: %s", e)
+        logger.warning("[VL] JSON parse failed: %s | raw: %s", e, _preview(content, 2000))
         return [], elapsed
-    chunks = parsed.get("chunks", []) if isinstance(parsed, dict) else []
+
+    regions = _extract_regions_list(parsed)
     out: list[dict[str, Any]] = []
-    for c in chunks:
-        if not isinstance(c, dict):
+    for r in regions:
+        text = str(r.get("text_content") or r.get("text") or r.get("content") or "").strip()
+        if not text:
             continue
-        text = str(c.get("text", "")).strip()
-        bbox = c.get("bbox") or c.get("box")
-        if not text or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        if "bbox_2d" in r:
+            bbox, fmt = r["bbox_2d"], "xyxy"
+        elif "bbox" in r:
+            bbox, fmt = r["bbox"], "xywh"
+        elif "box" in r:
+            bbox, fmt = r["box"], "xywh"
+        else:
             continue
-        try:
-            x, y, w, h = (int(round(float(v))) for v in bbox)
-        except (TypeError, ValueError):
+        coerced = _coerce_bbox(bbox, fmt=fmt, img_w=img_w, img_h=img_h)
+        if coerced is None:
             continue
-        if w <= 0 or h <= 0:
-            continue
+        x, y, w, h = coerced
         out.append({"text": text, "bbox": [x, y, w, h]})
-    logger.info("[VL] parsed %d chunks", len(out))
+
+    if not out:
+        logger.warning(
+            "[VL] parsed 0 regions from response. image=%dx%d | raw: %s",
+            img_w, img_h, _preview(content, 2000),
+        )
+    else:
+        logger.info("[VL] parsed %d chunks (image %dx%d)", len(out), img_w, img_h)
     return out, elapsed
 
 
