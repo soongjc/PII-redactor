@@ -270,7 +270,7 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
                     )
 
                 print(f"[{label}] stream> ", end="", flush=True)
-                thinking_chars = 0
+                thinking_buf: list[str] = []
                 first_line_dumped = False
                 for line in resp.iter_lines():
                     if not line:
@@ -282,20 +282,14 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
                         print(f"\n[{label}] non-json line: {line[:200]}", flush=True)
                         continue
                     if not first_line_dumped:
-                        # First line reveals the actual response schema — useful
-                        # for debugging models that emit content in unexpected
-                        # fields (thinking, reasoning, tool_calls, etc.).
                         preview = json.dumps(obj)[:300]
                         logger.info("[%s] first line: %s", label, preview)
                         first_line_dumped = True
                     msg_obj = obj.get("message", {}) or {}
                     chunk = msg_obj.get("content") or ""
-                    # Some Ollama builds put Qwen3 reasoning in message.thinking.
-                    # Count it so we can tell "model thought but produced no
-                    # output" from "nothing happened at all".
                     thinking = msg_obj.get("thinking") or ""
                     if thinking:
-                        thinking_chars += len(thinking)
+                        thinking_buf.append(thinking)
                     if chunk:
                         if first_token_at is None:
                             first_token_at = time.time()
@@ -304,12 +298,18 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
                     if obj.get("done"):
                         final_obj = obj
                 print(flush=True)  # newline after streaming ends
-                if not accumulated and thinking_chars:
-                    logger.warning(
-                        "[%s] %d chars of 'thinking' but 0 chars of content. "
-                        "Model stayed in reasoning mode. Check VL_DISABLE_THINK=true.",
-                        label, thinking_chars,
-                    )
+                # Fallback: if the model routed everything into "thinking" and
+                # left content empty, try the thinking text. Strip <think>/
+                # </think> wrappers that Qwen3 sometimes embeds.
+                if not accumulated and thinking_buf:
+                    raw_think = "".join(thinking_buf)
+                    stripped = re.sub(r"</?think>", "", raw_think).strip()
+                    if stripped:
+                        logger.warning(
+                            "[%s] content empty; falling back to %d chars of 'thinking'.",
+                            label, len(stripped),
+                        )
+                        accumulated.append(stripped)
                 if not accumulated and final_obj:
                     logger.warning(
                         "[%s] empty content. done_reason=%s eval_count=%s",
