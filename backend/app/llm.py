@@ -36,13 +36,13 @@ PII_TYPES = [
 
 VL_PROMPT_QWEN = """Extract every visible text region from the image.
 
-Return ONLY a JSON object with this exact shape:
-{"regions": [{"bbox_2d": [x1, y1, x2, y2], "text_content": "..."}, ...]}
+Return ONLY a JSON object in this exact compact shape:
+{"regions": [[x1, y1, x2, y2, "text"], ...]}
 
 Rules:
-- bbox_2d uses pixel coordinates of the input image (NOT normalized): x1,y1 is the top-left corner, x2,y2 is the bottom-right corner.
+- Each region is an array of exactly 5 items: x1, y1, x2, y2 (top-left and bottom-right pixel coordinates of the input image, NOT normalized), then the text string.
 - Group text into the smallest semantically meaningful units (a name, a phone number, an email, a single line of an address, a date). Do not merge unrelated lines.
-- Preserve original casing, punctuation, and spacing inside the chunk.
+- Preserve original casing, punctuation, and spacing inside the text.
 - If the image has no text, return {"regions": []}.
 - Do NOT include any prose, markdown, code fences, or explanations. JSON only.
 """
@@ -441,10 +441,11 @@ def _coerce_bbox(
     return x, y, w, h
 
 
-def _extract_regions_list(parsed: Any) -> list[dict[str, Any]]:
-    """Find the list of regions from various shapes a VL model returns."""
+def _extract_regions_list(parsed: Any) -> list[Any]:
+    """Find the list of regions. Each element may be a dict (old schema)
+    or a list (compact schema: [x1, y1, x2, y2, "text"])."""
     if isinstance(parsed, list):
-        return [r for r in parsed if isinstance(r, dict)]
+        return [r for r in parsed if isinstance(r, (dict, list))]
     if not isinstance(parsed, dict):
         return []
     for key in (
@@ -453,8 +454,7 @@ def _extract_regions_list(parsed: Any) -> list[dict[str, Any]]:
     ):
         v = parsed.get(key)
         if isinstance(v, list):
-            return [r for r in v if isinstance(r, dict)]
-    # Fallback: the dict itself might be one region, or values may contain it.
+            return [r for r in v if isinstance(r, (dict, list))]
     if "bbox_2d" in parsed or "bbox" in parsed or "box" in parsed:
         return [parsed]
     return []
@@ -583,20 +583,29 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
     regions = _extract_regions_list(parsed)
     out: list[dict[str, Any]] = []
     for r in regions:
-        # dots.ocr uses "category"; skip non-text layout elements.
-        category = str(r.get("category", "")).strip()
-        if category in _DOTSOCR_SKIP_CATEGORIES:
-            continue
-        text = str(r.get("text_content") or r.get("text") or r.get("content") or "").strip()
-        if not text:
-            continue
-        if "bbox_2d" in r:
-            bbox, fmt = r["bbox_2d"], "xyxy"
-        elif "bbox" in r:
-            bbox, fmt = r["bbox"], bbox_fmt_default
-        elif "box" in r:
-            bbox, fmt = r["box"], bbox_fmt_default
+        # Compact array form: [x1, y1, x2, y2, "text"]
+        if isinstance(r, list):
+            if len(r) < 5:
+                continue
+            bbox, fmt = r[:4], "xyxy"
+            text = str(r[4]).strip()
+        elif isinstance(r, dict):
+            # dots.ocr uses "category"; skip non-text layout elements.
+            category = str(r.get("category", "")).strip()
+            if category in _DOTSOCR_SKIP_CATEGORIES:
+                continue
+            text = str(r.get("text_content") or r.get("text") or r.get("content") or "").strip()
+            if "bbox_2d" in r:
+                bbox, fmt = r["bbox_2d"], "xyxy"
+            elif "bbox" in r:
+                bbox, fmt = r["bbox"], bbox_fmt_default
+            elif "box" in r:
+                bbox, fmt = r["box"], bbox_fmt_default
+            else:
+                continue
         else:
+            continue
+        if not text:
             continue
         coerced = _coerce_bbox(bbox, fmt=fmt, img_w=img_w, img_h=img_h)
         if coerced is None:
