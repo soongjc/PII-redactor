@@ -42,9 +42,10 @@ Return ONLY a JSON object in this exact shape:
 Rules:
 - bbox_2d uses pixel coordinates of the input image (NOT normalized): x1,y1 is the top-left corner, x2,y2 is the bottom-right corner.
 - text_content is the text inside that box, verbatim (preserve casing, punctuation, spacing).
-- Group text into the smallest semantically meaningful units (a name, a phone number, an email, a single line of an address, a date). Do not merge unrelated lines.
-- SKIP pure monetary amounts and prices (e.g. "233.50", "1,234.56", "RM 1,200", "$100.00", "€50") — they are not PII and are not useful to extract.
-- DO extract phone numbers, IDs, account numbers, reference numbers, and dates — even if they contain only digits.
+- Group text into the smallest semantically meaningful units (a name, a phone number, an email, a single line of an address). Do not merge unrelated lines.
+- SKIP pure monetary amounts and prices (e.g. "233.50", "1,234.56", "RM 1,200", "$100.00", "€50") — they are not PII.
+- SKIP pure dates (e.g. "2026-04-22", "04/22/2026", "Apr 22, 2026", "22 April") — they are not PII for this task.
+- DO extract phone numbers, IDs, account numbers, reference numbers, emails, names, and addresses — even if they contain only digits.
 - If the image has no text, return {"regions": []}.
 - Do NOT include any prose, markdown, code fences, or explanations. JSON only.
 """
@@ -115,6 +116,35 @@ _MONEY_RX = re.compile(
 
 def _looks_like_money(text: str) -> bool:
     return bool(_MONEY_RX.match(text))
+
+
+# Match pure date strings. Deliberately narrow: three-segment numeric dates
+# require a 4-digit year at one end (avoids SSN/phone false positives like
+# "123-45-6789"), plus month-name forms in either order.
+_MONTH_NAMES = (
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+    r"(?:uary|ruary|ch|il|e|y|ust|tember|ober|ember)?"
+)
+
+_DATE_RX = re.compile(
+    rf"""^\s*
+        (?:
+            \d{{4}}[/\-.]\d{{1,2}}[/\-.]\d{{1,2}}              # YYYY-MM-DD / YYYY/MM/DD
+            |
+            \d{{1,2}}[/\-.]\d{{1,2}}[/\-.]\d{{2,4}}             # DD/MM/YYYY or MM/DD/YYYY
+            |
+            {_MONTH_NAMES}\s+\d{{1,2}}(?:,?\s+\d{{2,4}})?        # Apr 22, 2026 / April 22
+            |
+            \d{{1,2}}\s+{_MONTH_NAMES}(?:,?\s+\d{{2,4}})?        # 22 Apr 2026 / 22 April
+        )
+        \s*$
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def _looks_like_date(text: str) -> bool:
+    return bool(_DATE_RX.match(text))
 
 
 # /no_think disables Qwen3's internal chain-of-thought which otherwise adds a lot of latency.
@@ -653,6 +683,8 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
         if not text:
             continue
         if settings.vl_filter_money and _looks_like_money(text):
+            continue
+        if settings.vl_filter_dates and _looks_like_date(text):
             continue
         coerced = _coerce_bbox(bbox, fmt=fmt, img_w=img_w, img_h=img_h)
         if coerced is None:

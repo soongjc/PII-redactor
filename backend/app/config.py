@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     # "$100.00"). They aren't PII and just waste tokens downstream.
     vl_filter_money: bool = True
 
+    # Drop VL regions that look like pure dates (e.g. "2026-04-22", "Apr 22, 2026").
+    # NOTE: this also removes DOB detection. Set to false if processing IDs,
+    # medical records, or anywhere date-of-birth matters.
+    vl_filter_dates: bool = True
+
     @property
     def storage_path(self) -> Path:
         p = Path(self.storage_dir).resolve()
