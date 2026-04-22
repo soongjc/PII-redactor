@@ -37,11 +37,11 @@ PII_TYPES = [
 VL_PROMPT_QWEN = """Extract every visible text region from the image.
 
 Return ONLY a JSON object in this exact shape:
-{"regions": [{"b": [x1, y1, x2, y2], "t": "text"}, ...]}
+{"regions": [{"bbox_2d": [x1, y1, x2, y2], "text_content": "..."}, ...]}
 
 Rules:
-- "b" is a 4-element array: x1, y1, x2, y2 (top-left and bottom-right pixel coordinates of the input image, NOT normalized).
-- "t" is the text content inside that box, verbatim (preserve casing, punctuation, spacing).
+- bbox_2d uses pixel coordinates of the input image (NOT normalized): x1,y1 is the top-left corner, x2,y2 is the bottom-right corner.
+- text_content is the text inside that box, verbatim (preserve casing, punctuation, spacing).
 - Group text into the smallest semantically meaningful units (a name, a phone number, an email, a single line of an address, a date). Do not merge unrelated lines.
 - If the image has no text, return {"regions": []}.
 - Do NOT include any prose, markdown, code fences, or explanations. JSON only.
