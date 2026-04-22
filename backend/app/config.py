@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     vl_format_json: bool = True
     pii_format_json: bool = True
 
+    # Disable Qwen3-family "thinking" mode. Qwen3 / qwen3-vl route reasoning
+    # into a separate `thinking` field; if the model stays in reasoning for too
+    # long it can emit zero content. Setting `think: false` in Ollama options
+    # makes the model answer directly. Safe on non-qwen3 models (ignored).
+    vl_disable_think: bool = True
+    pii_disable_think: bool = True
+
     database_url: str = "sqlite:///./storage/pii.db"
     storage_dir: str = "./storage"
     pdf_dpi: int = 150

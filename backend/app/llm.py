@@ -263,6 +263,8 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
                     )
 
                 print(f"[{label}] stream> ", end="", flush=True)
+                thinking_chars = 0
+                first_line_dumped = False
                 for line in resp.iter_lines():
                     if not line:
                         continue
@@ -270,10 +272,23 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
                     try:
                         obj = json.loads(line)
                     except json.JSONDecodeError:
-                        # Non-JSON line (rare); dump it so user can see.
                         print(f"\n[{label}] non-json line: {line[:200]}", flush=True)
                         continue
-                    chunk = obj.get("message", {}).get("content", "")
+                    if not first_line_dumped:
+                        # First line reveals the actual response schema — useful
+                        # for debugging models that emit content in unexpected
+                        # fields (thinking, reasoning, tool_calls, etc.).
+                        preview = json.dumps(obj)[:300]
+                        logger.info("[%s] first line: %s", label, preview)
+                        first_line_dumped = True
+                    msg_obj = obj.get("message", {}) or {}
+                    chunk = msg_obj.get("content") or ""
+                    # Some Ollama builds put Qwen3 reasoning in message.thinking.
+                    # Count it so we can tell "model thought but produced no
+                    # output" from "nothing happened at all".
+                    thinking = msg_obj.get("thinking") or ""
+                    if thinking:
+                        thinking_chars += len(thinking)
                     if chunk:
                         if first_token_at is None:
                             first_token_at = time.time()
@@ -282,6 +297,17 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
                     if obj.get("done"):
                         final_obj = obj
                 print(flush=True)  # newline after streaming ends
+                if not accumulated and thinking_chars:
+                    logger.warning(
+                        "[%s] %d chars of 'thinking' but 0 chars of content. "
+                        "Model stayed in reasoning mode. Check VL_DISABLE_THINK=true.",
+                        label, thinking_chars,
+                    )
+                if not accumulated and final_obj:
+                    logger.warning(
+                        "[%s] empty content. done_reason=%s eval_count=%s",
+                        label, final_obj.get("done_reason"), final_obj.get("eval_count"),
+                    )
     except httpx.ConnectError as e:
         raise LLMError(f"Cannot reach Ollama at {url}: {e}") from e
     except httpx.TimeoutException as e:
@@ -451,6 +477,8 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
         }
         if settings.vl_format_json:
             payload["format"] = "json"
+        if settings.vl_disable_think:
+            payload["think"] = False
         data, elapsed = _post_chat(payload, label="VL")
 
     content = data.get("message", {}).get("content", "")
@@ -532,6 +560,8 @@ def pii_tag_text(text: str) -> tuple[list[dict[str, str]], float]:
     }
     if settings.pii_format_json:
         payload["format"] = "json"
+    if settings.pii_disable_think:
+        payload["think"] = False
     data, elapsed = _post_chat(payload, label="PII")
     content = data.get("message", {}).get("content", "")
     try:
