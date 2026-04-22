@@ -36,13 +36,13 @@ PII_TYPES = [
 
 VL_PROMPT_QWEN = """Extract every visible text region from the image.
 
-Return ONLY a JSON object in this exact compact shape:
-{"regions": [[x1, y1, x2, y2, "text"], ...]}
+Return ONLY a JSON object in this exact shape:
+{"regions": [{"b": [x1, y1, x2, y2], "t": "text"}, ...]}
 
 Rules:
-- Each region is an array of exactly 5 items: x1, y1, x2, y2 (top-left and bottom-right pixel coordinates of the input image, NOT normalized), then the text string.
+- "b" is a 4-element array: x1, y1, x2, y2 (top-left and bottom-right pixel coordinates of the input image, NOT normalized).
+- "t" is the text content inside that box, verbatim (preserve casing, punctuation, spacing).
 - Group text into the smallest semantically meaningful units (a name, a phone number, an email, a single line of an address, a date). Do not merge unrelated lines.
-- Preserve original casing, punctuation, and spacing inside the text.
 - If the image has no text, return {"regions": []}.
 - Do NOT include any prose, markdown, code fences, or explanations. JSON only.
 """
@@ -538,7 +538,12 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
             payload["max_tokens"] = settings.vl_num_predict
         data, elapsed = _post_chat_openai(payload, label="VL", base_url=settings.llamacpp_host)
     else:
-        options: dict[str, Any] = {"temperature": 0.0}
+        options: dict[str, Any] = {
+            "temperature": 0.0,
+            # Discourage degenerate repetition loops (e.g. the same region
+            # emitted over and over until num_predict is exhausted).
+            "repeat_penalty": 1.1,
+        }
         if settings.vl_num_ctx > 0:
             options["num_ctx"] = settings.vl_num_ctx
         if settings.vl_num_predict > 0:
@@ -594,8 +599,16 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
             category = str(r.get("category", "")).strip()
             if category in _DOTSOCR_SKIP_CATEGORIES:
                 continue
-            text = str(r.get("text_content") or r.get("text") or r.get("content") or "").strip()
-            if "bbox_2d" in r:
+            text = str(
+                r.get("t")
+                or r.get("text_content")
+                or r.get("text")
+                or r.get("content")
+                or ""
+            ).strip()
+            if "b" in r and isinstance(r["b"], list):
+                bbox, fmt = r["b"], "xyxy"
+            elif "bbox_2d" in r:
                 bbox, fmt = r["bbox_2d"], "xyxy"
             elif "bbox" in r:
                 bbox, fmt = r["bbox"], bbox_fmt_default
