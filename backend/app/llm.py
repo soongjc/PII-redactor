@@ -34,7 +34,7 @@ PII_TYPES = [
 ]
 
 
-VL_PROMPT = """Extract every visible text region from the image.
+VL_PROMPT_QWEN = """Extract every visible text region from the image.
 
 Return ONLY a JSON object with this exact shape:
 {"regions": [{"bbox_2d": [x1, y1, x2, y2], "text_content": "..."}, ...]}
@@ -46,6 +46,36 @@ Rules:
 - If the image has no text, return {"regions": []}.
 - Do NOT include any prose, markdown, code fences, or explanations. JSON only.
 """
+
+
+# dots.ocr's native prompt from rednote-hilab/dots.ocr/dots_ocr/utils/prompts.py.
+# Output is an array of {bbox: [x1,y1,x2,y2], category, text} where bbox is xyxy.
+VL_PROMPT_DOTSOCR = """Please output the layout information from the PDF image, including each layout element's bbox, its category, and the corresponding text content within the bbox.
+
+1. Bbox format: [x1, y1, x2, y2]
+
+2. Layout Categories: The possible categories are ['Caption', 'Footnote', 'Formula', 'List-item', 'Page-footer', 'Page-header', 'Picture', 'Section-header', 'Table', 'Text', 'Title'].
+
+3. Text Extraction & Formatting Rules:
+    - Picture: For the 'Picture' category, the text field should be omitted.
+    - Formula: Format its text as LaTeX.
+    - Table: Format its text as HTML.
+    - All Others (Text, Title, etc.): Format their text as Markdown.
+
+4. Constraints:
+    - The output text must be the original text from the image, with no translation.
+    - All layout elements must be sorted according to human reading order.
+
+5. Final Output: The entire output must be a single JSON object.
+"""
+
+
+def _vl_prompt() -> str:
+    return VL_PROMPT_DOTSOCR if settings.vl_prompt_mode == "dotsocr" else VL_PROMPT_QWEN
+
+
+# Categories from dots.ocr we should never treat as redactable text.
+_DOTSOCR_SKIP_CATEGORIES = {"Picture"}
 
 
 # /no_think disables Qwen3's internal chain-of-thought which otherwise adds a lot of latency.
@@ -124,6 +154,80 @@ def _classify_error(model: str, body: str) -> str:
     if "try pulling" in body_l or "model not found" in body_l or "no such model" in body_l:
         return f"Model '{model}' isn't pulled. Run: ollama pull {model}"
     return "See Ollama server logs for details."
+
+
+def _post_chat_openai(payload: dict[str, Any], *, label: str, base_url: str) -> tuple[dict[str, Any], float]:
+    """POST to /v1/chat/completions (llama-server / OpenAI-compatible) with
+    streaming SSE. Returns the same dict shape as _post_chat_ollama: {message:{content:str}}."""
+    url = f"{base_url.rstrip('/')}/v1/chat/completions"
+    model = payload.get("model")
+    msg = f"[{label}] -> {url} model={model} (openai)"
+    logger.info(msg)
+    print(msg, flush=True)
+
+    stream_payload = {**payload, "stream": True}
+
+    t0 = time.time()
+    accumulated: list[str] = []
+    first_token_at: float | None = None
+
+    try:
+        with httpx.Client(timeout=_chat_timeout()) as client:
+            with client.stream("POST", url, json=stream_payload) as resp:
+                if resp.status_code >= 400:
+                    body_bytes = resp.read()
+                    body = body_bytes.decode("utf-8", errors="replace")[:500]
+                    err_msg = f"[{label}] llama-server returned {resp.status_code}: {body}"
+                    logger.warning(err_msg)
+                    print(err_msg, flush=True)
+                    raise LLMError(
+                        f"llama-server {resp.status_code} from '{model}'. Body: {body}"
+                    )
+
+                print(f"[{label}] stream> ", end="", flush=True)
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    # SSE wraps each chunk as "data: {...}" with "[DONE]" to terminate.
+                    if line.startswith("data: "):
+                        data_str = line[6:].strip()
+                    else:
+                        data_str = line.strip()
+                    if data_str == "[DONE]":
+                        break
+                    if not data_str:
+                        continue
+                    try:
+                        obj = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        print(f"\n[{label}] non-json line: {data_str[:200]}", flush=True)
+                        continue
+                    choices = obj.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    chunk = delta.get("content") or ""
+                    # Some llama-server builds put full message instead of delta:
+                    if not chunk and "message" in choices[0]:
+                        chunk = choices[0]["message"].get("content", "") or ""
+                    if chunk:
+                        if first_token_at is None:
+                            first_token_at = time.time()
+                        print(chunk, end="", flush=True)
+                        accumulated.append(chunk)
+                print(flush=True)
+    except httpx.ConnectError as e:
+        raise LLMError(f"Cannot reach llama-server at {url}: {e}") from e
+    except httpx.TimeoutException as e:
+        raise LLMError(f"llama-server request timed out: {e}") from e
+
+    elapsed = time.time() - t0
+    content = "".join(accumulated)
+    ttft = f", first-token {first_token_at - t0:.2f}s" if first_token_at else ""
+    done_msg = f"[{label}] <- {elapsed:.2f}s{ttft} | {len(content)} chars"
+    logger.info(done_msg)
+    print(done_msg, flush=True)
+    return {"message": {"role": "assistant", "content": content}}, elapsed
 
 
 def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], float]:
@@ -236,12 +340,15 @@ def _coerce_bbox(
 
 
 def _extract_regions_list(parsed: Any) -> list[dict[str, Any]]:
-    """Find the list of regions from various shapes Qwen-VL returns."""
+    """Find the list of regions from various shapes a VL model returns."""
     if isinstance(parsed, list):
         return [r for r in parsed if isinstance(r, dict)]
     if not isinstance(parsed, dict):
         return []
-    for key in ("regions", "chunks", "text_regions", "results", "data", "items"):
+    for key in (
+        "regions", "chunks", "text_regions", "results", "data", "items",
+        "layout", "layout_elements", "elements",
+    ):
         v = parsed.get(key)
         if isinstance(v, list):
             return [r for r in v if isinstance(r, dict)]
@@ -308,21 +415,43 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
     )
 
     b64 = base64.b64encode(png_bytes).decode("ascii")
-    options: dict[str, Any] = {"temperature": 0.0}
-    if settings.vl_num_ctx > 0:
-        options["num_ctx"] = settings.vl_num_ctx
-    if settings.vl_num_predict > 0:
-        options["num_predict"] = settings.vl_num_predict
-    payload = {
-        "model": settings.vl_model,
-        "messages": [
-            {"role": "user", "content": VL_PROMPT, "images": [b64]},
-        ],
-        "stream": False,
-        "format": "json",
-        "options": options,
-    }
-    data, elapsed = _post_chat(payload, label="VL")
+    prompt_text = _vl_prompt()
+
+    if settings.vl_backend == "llamacpp":
+        # OpenAI-compatible payload.
+        payload: dict[str, Any] = {
+            "model": settings.vl_model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                        {"type": "text", "text": prompt_text},
+                    ],
+                }
+            ],
+            "temperature": 0.0,
+        }
+        if settings.vl_num_predict > 0:
+            payload["max_tokens"] = settings.vl_num_predict
+        data, elapsed = _post_chat_openai(payload, label="VL", base_url=settings.llamacpp_host)
+    else:
+        options: dict[str, Any] = {"temperature": 0.0}
+        if settings.vl_num_ctx > 0:
+            options["num_ctx"] = settings.vl_num_ctx
+        if settings.vl_num_predict > 0:
+            options["num_predict"] = settings.vl_num_predict
+        payload = {
+            "model": settings.vl_model,
+            "messages": [
+                {"role": "user", "content": prompt_text, "images": [b64]},
+            ],
+            "stream": False,
+            "format": "json",
+            "options": options,
+        }
+        data, elapsed = _post_chat(payload, label="VL")
+
     content = data.get("message", {}).get("content", "")
     try:
         parsed = _safe_json_loads(content)
@@ -333,18 +462,25 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
     # bbox_2d / bbox / box are interpreted in the coord space of the image we SENT.
     img_w, img_h = sent_w, sent_h
 
+    # In dots.ocr mode, the "bbox" field is xyxy (not xywh like the qwen prompt).
+    bbox_fmt_default = "xyxy" if settings.vl_prompt_mode == "dotsocr" else "xywh"
+
     regions = _extract_regions_list(parsed)
     out: list[dict[str, Any]] = []
     for r in regions:
+        # dots.ocr uses "category"; skip non-text layout elements.
+        category = str(r.get("category", "")).strip()
+        if category in _DOTSOCR_SKIP_CATEGORIES:
+            continue
         text = str(r.get("text_content") or r.get("text") or r.get("content") or "").strip()
         if not text:
             continue
         if "bbox_2d" in r:
             bbox, fmt = r["bbox_2d"], "xyxy"
         elif "bbox" in r:
-            bbox, fmt = r["bbox"], "xywh"
+            bbox, fmt = r["bbox"], bbox_fmt_default
         elif "box" in r:
-            bbox, fmt = r["box"], "xywh"
+            bbox, fmt = r["box"], bbox_fmt_default
         else:
             continue
         coerced = _coerce_bbox(bbox, fmt=fmt, img_w=img_w, img_h=img_h)

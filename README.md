@@ -93,6 +93,9 @@ Backend settings (env vars or `backend/.env`):
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama base URL |
 | `VL_MODEL` | `qwen2.5vl:7b` | Vision-language model tag |
 | `PII_MODEL` | `qwen3:8b` | PII tagger model tag |
+| `VL_BACKEND` | `ollama` | `ollama` or `llamacpp` (upstream llama-server, for models Ollama hasn't wired vision for). |
+| `LLAMACPP_HOST` | `http://localhost:11500` | llama-server base URL (when `VL_BACKEND=llamacpp`). |
+| `VL_PROMPT_MODE` | `qwen` | `qwen` (Qwen2.5-VL prompt) or `dotsocr` (dots.ocr's native `prompt_layout_all_en`). |
 | `DATABASE_URL` | `sqlite:///./storage/pii.db` | SQLAlchemy URL |
 | `STORAGE_DIR` | `./storage` | Local file storage root |
 | `PDF_DPI` | `150` | Rasterization DPI |
@@ -105,6 +108,35 @@ Backend settings (env vars or `backend/.env`):
 | `REFINE_EXPAND_PCT` | `0.10` | Expand VL bbox by this % before tightening (recovers missing edges). |
 | `REFINE_THRESHOLD` | `180` | Grayscale threshold: pixels darker than this count as text. |
 | `MASK_PADDING_PX` | `2` | Extra pixels around each bbox when drawing the black mask. |
+
+## Using dots.ocr via llama-server
+
+Ollama doesn't have vision wiring for `dots.ocr` yet (the main GGUF loads as a
+text-only qwen2 model). Run it through upstream llama.cpp's `llama-server`
+instead:
+
+```bash
+# Download both GGUFs from https://huggingface.co/ggml-org/dots.ocr-GGUF
+#   dots.ocr-f16.gguf (or another quant)
+#   mmproj-dots.ocr-Q8_0.gguf (the vision projector)
+
+# macOS:
+brew install llama.cpp
+
+llama-server \
+  -m ~/models/dots-ocr/dots.ocr-f16.gguf \
+  --mmproj ~/models/dots-ocr/mmproj-dots.ocr-Q8_0.gguf \
+  --port 11500 --host 127.0.0.1
+```
+
+Then in `backend/.env`:
+```
+VL_BACKEND=llamacpp
+LLAMACPP_HOST=http://localhost:11500
+VL_PROMPT_MODE=dotsocr
+VL_MODEL=dots-ocr     # any name; llama-server ignores it
+```
+Restart uvicorn; the PII tagger (Qwen3) keeps running on Ollama.
 
 ## Notes & limitations
 

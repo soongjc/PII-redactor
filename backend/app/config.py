@@ -8,6 +8,17 @@ class Settings(BaseSettings):
     ollama_host: str = "http://localhost:11434"
     vl_model: str = "qwen2.5vl:7b"
     pii_model: str = "qwen3:8b"
+
+    # VL backend: "ollama" (default, Ollama /api/chat) or "llamacpp" (upstream
+    # llama-server /v1/chat/completions — use this for models Ollama hasn't
+    # wired vision for yet, like dots.ocr).
+    vl_backend: str = "ollama"
+    llamacpp_host: str = "http://localhost:11500"
+
+    # Prompt preset: "qwen" (our JSON prompt, works with Qwen2.5-VL) or
+    # "dotsocr" (rednote dots.ocr's native prompt_layout_all_en).
+    vl_prompt_mode: str = "qwen"
+
     database_url: str = "sqlite:///./storage/pii.db"
     storage_dir: str = "./storage"
     pdf_dpi: int = 150
