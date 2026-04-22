@@ -60,7 +60,12 @@ class Settings(BaseSettings):
 
     # Bbox calibration.
     refine_bboxes: bool = True           # tighten VL bboxes to dark-pixel content
-    refine_expand_pct: float = 0.10      # expand VL bbox by this % before tightening
+    # Expand bbox by this fraction BEFORE tightening. Split by axis: vertical
+    # expansion is dangerous on tightly-packed documents (grabs neighbouring
+    # lines, making boxes look too tall), so we only expand horizontally by
+    # default. Raise vertical if boxes clip ascenders/descenders.
+    refine_expand_x_pct: float = 0.10
+    refine_expand_y_pct: float = 0.0
     refine_threshold: int = 180          # pixel value: < threshold is "text"
     mask_padding_px: int = 2             # extra pixels around each bbox when masking
 

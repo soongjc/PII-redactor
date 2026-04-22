@@ -16,12 +16,13 @@ def _refine_one(
     w: int,
     h: int,
     *,
-    expand_pct: float,
+    expand_x_pct: float,
+    expand_y_pct: float,
     threshold: int,
 ) -> tuple[int, int, int, int]:
     W, H = img.size
-    pad_x = int(round(w * expand_pct))
-    pad_y = int(round(h * expand_pct))
+    pad_x = int(round(w * expand_x_pct))
+    pad_y = int(round(h * expand_y_pct))
 
     ex = max(0, x - pad_x)
     ey = max(0, y - pad_y)
@@ -64,7 +65,8 @@ def refine_entities(
                     int(e["y"]),
                     int(e["w"]),
                     int(e["h"]),
-                    expand_pct=settings.refine_expand_pct,
+                    expand_x_pct=settings.refine_expand_x_pct,
+                    expand_y_pct=settings.refine_expand_y_pct,
                     threshold=settings.refine_threshold,
                 )
             except Exception:
