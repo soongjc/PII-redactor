@@ -71,7 +71,14 @@ VL_PROMPT_DOTSOCR = """Please output the layout information from the PDF image, 
 
 
 def _vl_prompt() -> str:
-    return VL_PROMPT_DOTSOCR if settings.vl_prompt_mode == "dotsocr" else VL_PROMPT_QWEN
+    base = VL_PROMPT_DOTSOCR if settings.vl_prompt_mode == "dotsocr" else VL_PROMPT_QWEN
+    # Qwen3-family recognises `/no_think` at the start of a user message and
+    # skips reasoning for that turn. Belt-and-braces with the `think: false`
+    # option, which some Ollama builds silently ignore. Non-Qwen3 models treat
+    # it as an unremarkable prefix.
+    if settings.vl_disable_think:
+        return "/no_think\n\n" + base
+    return base
 
 
 # Categories from dots.ocr we should never treat as redactable text.
@@ -482,6 +489,16 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
         data, elapsed = _post_chat(payload, label="VL")
 
     content = data.get("message", {}).get("content", "")
+    if not content.strip():
+        # Empty content most often means the model spent its whole budget in
+        # "thinking" mode. Surface a targeted error so the UI shows it.
+        raise LLMError(
+            f"Model '{settings.vl_model}' returned 0 content chars (likely stayed in "
+            "reasoning mode). Try: (1) keep VL_DISABLE_THINK=true, (2) set "
+            "VL_FORMAT_JSON=false, (3) raise VL_NUM_PREDICT (e.g. 4096) so reasoning "
+            "doesn't exhaust the budget, or (4) try a different VL model "
+            "(qwen2.5vl:7b is a known-good choice)."
+        )
     try:
         parsed = _safe_json_loads(content)
     except json.JSONDecodeError as e:
