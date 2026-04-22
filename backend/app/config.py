@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     pii_num_ctx: int = 0
     pii_num_predict: int = 0
 
+    # HTTP timeout (seconds) for each Ollama request. Cold-loading a VL model
+    # on CPU/Metal can take a minute; raise if you see read timeouts.
+    ollama_timeout_s: float = 1200.0
+    ollama_connect_timeout_s: float = 30.0
+
     # Bbox calibration.
     refine_bboxes: bool = True           # tighten VL bboxes to dark-pixel content
     refine_expand_pct: float = 0.10      # expand VL bbox by this % before tightening

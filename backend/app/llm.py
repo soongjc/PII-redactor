@@ -15,7 +15,10 @@ from .config import settings
 
 logger = get_logger("pii.llm")
 
-_CHAT_TIMEOUT = httpx.Timeout(600.0, connect=10.0)
+def _chat_timeout() -> httpx.Timeout:
+    return httpx.Timeout(
+        settings.ollama_timeout_s, connect=settings.ollama_connect_timeout_s
+    )
 
 
 PII_TYPES = [
@@ -107,7 +110,7 @@ def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], 
     print(msg, flush=True)
     t0 = time.time()
     try:
-        with httpx.Client(timeout=_CHAT_TIMEOUT) as client:
+        with httpx.Client(timeout=_chat_timeout()) as client:
             resp = client.post(url, json=payload)
     except httpx.ConnectError as e:
         raise LLMError(f"Cannot reach Ollama at {url}: {e}") from e
