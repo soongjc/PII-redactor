@@ -264,6 +264,11 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
     )
 
     b64 = base64.b64encode(png_bytes).decode("ascii")
+    options: dict[str, Any] = {"temperature": 0.0}
+    if settings.vl_num_ctx > 0:
+        options["num_ctx"] = settings.vl_num_ctx
+    if settings.vl_num_predict > 0:
+        options["num_predict"] = settings.vl_num_predict
     payload = {
         "model": settings.vl_model,
         "messages": [
@@ -271,11 +276,7 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
         ],
         "stream": False,
         "format": "json",
-        "options": {
-            "temperature": 0.0,
-            "num_ctx": settings.vl_num_ctx,
-            "num_predict": settings.vl_num_predict,
-        },
+        "options": options,
     }
     data, elapsed = _post_chat(payload, label="VL")
     content = data.get("message", {}).get("content", "")
@@ -335,6 +336,11 @@ def pii_tag_text(text: str) -> tuple[list[dict[str, str]], float]:
     """Call Qwen3. Returns (entities, elapsed_seconds)."""
     if not text.strip():
         return [], 0.0
+    options: dict[str, Any] = {"temperature": 0.0}
+    if settings.pii_num_ctx > 0:
+        options["num_ctx"] = settings.pii_num_ctx
+    if settings.pii_num_predict > 0:
+        options["num_predict"] = settings.pii_num_predict
     payload = {
         "model": settings.pii_model,
         "messages": [
@@ -342,11 +348,7 @@ def pii_tag_text(text: str) -> tuple[list[dict[str, str]], float]:
         ],
         "stream": False,
         "format": "json",
-        "options": {
-            "temperature": 0.0,
-            "num_ctx": settings.pii_num_ctx,
-            "num_predict": settings.pii_num_predict,
-        },
+        "options": options,
     }
     data, elapsed = _post_chat(payload, label="PII")
     content = data.get("message", {}).get("content", "")

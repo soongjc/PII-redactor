@@ -97,10 +97,10 @@ Backend settings (env vars or `backend/.env`):
 | `STORAGE_DIR` | `./storage` | Local file storage root |
 | `PDF_DPI` | `150` | Rasterization DPI |
 | `VL_MAX_PIXELS` | `802816` | Cap total pixels sent to VL (matches Qwen's smart_resize). Larger = better OCR, more VRAM. Upstream default is 1003520. |
-| `VL_NUM_CTX` | `8192` | Ollama context window for VL. Safe default on macOS Metal; raise with caution. |
-| `VL_NUM_PREDICT` | `4096` | Max new tokens for VL. Raise if output is cut off. |
-| `PII_NUM_CTX` | `8192` | Context window for Qwen3 PII call. |
-| `PII_NUM_PREDICT` | `2048` | Max new tokens for Qwen3. |
+| `VL_NUM_CTX` | `0` | Context window for VL. `0` = use Ollama's Modelfile default (safest — custom values can trigger GGML_ASSERT on some builds). |
+| `VL_NUM_PREDICT` | `0` | Max new tokens for VL. `0` = Ollama default. |
+| `PII_NUM_CTX` | `0` | Context window for Qwen3 PII call. `0` = Ollama default. |
+| `PII_NUM_PREDICT` | `0` | Max new tokens for Qwen3. `0` = Ollama default. |
 | `REFINE_BBOXES` | `true` | Tighten VL bboxes to actual text content (PIL threshold). |
 | `REFINE_EXPAND_PCT` | `0.10` | Expand VL bbox by this % before tightening (recovers missing edges). |
 | `REFINE_THRESHOLD` | `180` | Grayscale threshold: pixels darker than this count as text. |

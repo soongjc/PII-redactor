@@ -18,13 +18,13 @@ class Settings(BaseSettings):
     # tokens). 802816 = 1024 tokens is a faster/less-VRAM alternative.
     vl_max_pixels: int = 802816
 
-    # Ollama generation knobs. 8192 is a safe ceiling on macOS Metal; larger
-    # values trigger a llama.cpp GGML_ASSERT crash with Qwen-VL on some builds.
-    # If VL output truncates on dense pages, raise gradually and watch ollama logs.
-    vl_num_ctx: int = 8192         # context window (tokens)
-    vl_num_predict: int = 4096     # max new tokens
-    pii_num_ctx: int = 8192
-    pii_num_predict: int = 2048
+    # Ollama token limits. 0 = don't send the option, let Ollama use its
+    # Modelfile default. Sending a num_ctx with images triggers a GGML_ASSERT
+    # crash on some Ollama/llama.cpp builds — 0 is the safe default.
+    vl_num_ctx: int = 0
+    vl_num_predict: int = 0
+    pii_num_ctx: int = 0
+    pii_num_predict: int = 0
 
     # Bbox calibration.
     refine_bboxes: bool = True           # tighten VL bboxes to dark-pixel content
