@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     # "dotsocr" (rednote dots.ocr's native prompt_layout_all_en).
     vl_prompt_mode: str = "qwen"
 
+    # Ollama's `format: "json"` forces structured JSON output. Great when
+    # supported, but breaks on some brand-new vision models (e.g. qwen3-vl on
+    # certain Ollama builds — you'll see "stream>" appear with no tokens).
+    # Set to false to disable; we still strip/parse JSON on our side.
+    vl_format_json: bool = True
+    pii_format_json: bool = True
+
     database_url: str = "sqlite:///./storage/pii.db"
     storage_dir: str = "./storage"
     pdf_dpi: int = 150

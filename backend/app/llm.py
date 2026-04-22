@@ -447,9 +447,10 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
                 {"role": "user", "content": prompt_text, "images": [b64]},
             ],
             "stream": False,
-            "format": "json",
             "options": options,
         }
+        if settings.vl_format_json:
+            payload["format"] = "json"
         data, elapsed = _post_chat(payload, label="VL")
 
     content = data.get("message", {}).get("content", "")
@@ -527,9 +528,10 @@ def pii_tag_text(text: str) -> tuple[list[dict[str, str]], float]:
             {"role": "user", "content": PII_PROMPT_TEMPLATE.format(text=text)},
         ],
         "stream": False,
-        "format": "json",
         "options": options,
     }
+    if settings.pii_format_json:
+        payload["format"] = "json"
     data, elapsed = _post_chat(payload, label="PII")
     content = data.get("message", {}).get("content", "")
     try:
