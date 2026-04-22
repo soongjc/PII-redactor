@@ -43,13 +43,15 @@ class Settings(BaseSettings):
     # tokens). 802816 = 1024 tokens is a faster/less-VRAM alternative.
     vl_max_pixels: int = 802816
 
-    # Ollama token limits. 0 = don't send the option, let Ollama use its
-    # Modelfile default. Sending a num_ctx with images triggers a GGML_ASSERT
-    # crash on some Ollama/llama.cpp builds — 0 is the safe default.
+    # Ollama token limits. num_ctx=0 means "don't send", let Ollama use its
+    # Modelfile default — this dodges a GGML_ASSERT crash on macOS Metal when
+    # a custom num_ctx is sent with images. num_predict caps generated tokens;
+    # too low causes mid-JSON truncation. We send num_predict explicitly with
+    # a generous ceiling so dense pages don't get cut off.
     vl_num_ctx: int = 0
-    vl_num_predict: int = 0
+    vl_num_predict: int = 8192
     pii_num_ctx: int = 0
-    pii_num_predict: int = 0
+    pii_num_predict: int = 4096
 
     # HTTP timeout (seconds) for each Ollama request. Cold-loading a VL model
     # on CPU/Metal can take a minute; raise if you see read timeouts.

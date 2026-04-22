@@ -123,11 +123,80 @@ def _strip_to_json(raw: str) -> str:
     return s
 
 
+def _repair_truncated_json(s: str) -> str:
+    """Best-effort fix for JSON that ran out of token budget mid-stream.
+
+    Walk the string tracking string/escape state and a brace/bracket stack;
+    truncate to the last successful close (the latest `}` or `]` that matched
+    its opener), then append closers for whatever stayed unclosed. Drops the
+    trailing incomplete element instead of failing the whole page.
+    """
+    stack: list[str] = []
+    in_str = False
+    escape = False
+    last_complete = -1
+    for i, c in enumerate(s):
+        if escape:
+            escape = False
+            continue
+        if c == "\\" and in_str:
+            escape = True
+            continue
+        if c == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if c == "{":
+            stack.append("}")
+        elif c == "[":
+            stack.append("]")
+        elif c == "}" or c == "]":
+            if stack and stack[-1] == c:
+                stack.pop()
+                last_complete = i
+            else:
+                # Mismatched close — give up, return original.
+                return s
+    if last_complete < 0:
+        return s
+    truncated = s[: last_complete + 1].rstrip().rstrip(",").rstrip()
+    # Re-walk the truncated portion to compute the *new* unclosed stack.
+    stack = []
+    in_str = False
+    escape = False
+    for c in truncated:
+        if escape:
+            escape = False; continue
+        if c == "\\" and in_str:
+            escape = True; continue
+        if c == '"':
+            in_str = not in_str; continue
+        if in_str:
+            continue
+        if c == "{":
+            stack.append("}")
+        elif c == "[":
+            stack.append("]")
+        elif c == "}" or c == "]":
+            if stack and stack[-1] == c:
+                stack.pop()
+    return truncated + "".join(reversed(stack))
+
+
 def _safe_json_loads(raw: str) -> dict[str, Any]:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        return json.loads(_strip_to_json(raw))
+        pass
+    stripped = _strip_to_json(raw)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        repaired = _repair_truncated_json(stripped)
+        if repaired != stripped:
+            logger.warning("[JSON] repaired truncated output (-> %d chars)", len(repaired))
+        return json.loads(repaired)
 
 
 def _preview(s: str, n: int = 400) -> str:
