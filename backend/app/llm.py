@@ -43,6 +43,8 @@ Rules:
 - bbox_2d uses pixel coordinates of the input image (NOT normalized): x1,y1 is the top-left corner, x2,y2 is the bottom-right corner.
 - text_content is the text inside that box, verbatim (preserve casing, punctuation, spacing).
 - Group text into the smallest semantically meaningful units (a name, a phone number, an email, a single line of an address, a date). Do not merge unrelated lines.
+- SKIP pure monetary amounts and prices (e.g. "233.50", "1,234.56", "RM 1,200", "$100.00", "€50") — they are not PII and are not useful to extract.
+- DO extract phone numbers, IDs, account numbers, reference numbers, and dates — even if they contain only digits.
 - If the image has no text, return {"regions": []}.
 - Do NOT include any prose, markdown, code fences, or explanations. JSON only.
 """
@@ -83,6 +85,36 @@ def _vl_prompt() -> str:
 
 # Categories from dots.ocr we should never treat as redactable text.
 _DOTSOCR_SKIP_CATEGORIES = {"Picture"}
+
+
+# Match pure money-like strings. Kept narrow so we don't accidentally filter
+# phone/account/SSN/date shapes (which don't have decimal points or currency
+# prefixes/suffixes). Covers:
+#   - Currency-prefixed:  $100, RM 1,234.56, €50.00, USD 10
+#   - Currency-suffixed:  1,234.56 MYR, 100 USD
+#   - Plain decimal:      233.50, 1,234.56
+_MONEY_RX = re.compile(
+    r"""^\s*
+        (?:
+            # Prefix:  $100 / RM 1,234.56 / USD 10
+            (?:RM|MYR|USD|SGD|HKD|EUR|GBP|JPY|CNY|\$|€|£|¥|HK\$|S\$|US\$|AU\$|NZ\$)
+            \s*[\-+]?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?
+            |
+            # Suffix:  1,234.56 MYR / 100 USD
+            [\-+]?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?
+            \s*(?:RM|MYR|USD|SGD|HKD|EUR|GBP|JPY|CNY|\$|€|£|¥)
+            |
+            # Bare decimal with 1-2 dp:  233.50 / 1,234.5
+            [\-+]?\d{1,3}(?:,\d{3})*\.\d{1,2}
+        )
+        \s*$
+    """,
+    re.VERBOSE,
+)
+
+
+def _looks_like_money(text: str) -> bool:
+    return bool(_MONEY_RX.match(text))
 
 
 # /no_think disables Qwen3's internal chain-of-thought which otherwise adds a lot of latency.
@@ -619,6 +651,8 @@ def vl_extract_chunks(image_path: Path) -> tuple[list[dict[str, Any]], float]:
         else:
             continue
         if not text:
+            continue
+        if settings.vl_filter_money and _looks_like_money(text):
             continue
         coerced = _coerce_bbox(bbox, fmt=fmt, img_w=img_w, img_h=img_h)
         if coerced is None:

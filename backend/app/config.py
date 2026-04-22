@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     refine_threshold: int = 180          # pixel value: < threshold is "text"
     mask_padding_px: int = 2             # extra pixels around each bbox when masking
 
+    # Drop VL regions that look like pure money values (e.g. "233.50", "RM 1,200",
+    # "$100.00"). They aren't PII and just waste tokens downstream.
+    vl_filter_money: bool = True
+
     @property
     def storage_path(self) -> Path:
         p = Path(self.storage_dir).resolve()
