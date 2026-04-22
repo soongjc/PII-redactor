@@ -102,58 +102,99 @@ class LLMError(RuntimeError):
     """Raised when the upstream LLM call fails in a way we can display."""
 
 
+def _classify_error(model: str, body: str) -> str:
+    body_l = body.lower()
+    # Check crashes FIRST — the body often contains a URL like
+    # "llama.cpp/pull/17869" which would otherwise match a naive "pull" hint.
+    if any(s in body for s in ("GGML_ASSERT", "SIGABRT", "SIGSEGV", "panic")) or "out of memory" in body_l:
+        return (
+            "Ollama/llama.cpp runtime crashed (often a Metal bug fixed upstream). "
+            "Fixes in order of likelihood: "
+            "1) update Ollama (`brew upgrade ollama` or redownload the app), "
+            "2) lower VL_NUM_CTX (e.g. 4096), "
+            "3) lower VL_MAX_PIXELS (e.g. 602112), "
+            "4) try `OLLAMA_FLASH_ATTENTION=0 ollama serve`, "
+            f"5) re-pull: `ollama pull {model}`."
+        )
+    if "does not support images" in body_l or "not a multimodal" in body_l:
+        return (
+            f"Model '{model}' is not multimodal. Set VL_MODEL to a vision tag "
+            f"(e.g. qwen2.5vl:7b, llama3.2-vision:11b, minicpm-v)."
+        )
+    if "try pulling" in body_l or "model not found" in body_l or "no such model" in body_l:
+        return f"Model '{model}' isn't pulled. Run: ollama pull {model}"
+    return "See Ollama server logs for details."
+
+
 def _post_chat(payload: dict[str, Any], *, label: str) -> tuple[dict[str, Any], float]:
+    """POST to /api/chat with streaming so token output is visible in the terminal
+    as the model generates. Accumulates chunks into the same dict shape the caller
+    expects from a non-streaming response."""
     url = f"{settings.ollama_host.rstrip('/')}/api/chat"
     model = payload.get("model")
     msg = f"[{label}] -> {url} model={model}"
     logger.info(msg)
     print(msg, flush=True)
+
+    # Force streaming mode regardless of what the caller put in payload.
+    stream_payload = {**payload, "stream": True}
+
     t0 = time.time()
+    accumulated: list[str] = []
+    final_obj: dict[str, Any] | None = None
+    lines_seen = 0
+    first_token_at: float | None = None
+
     try:
         with httpx.Client(timeout=_chat_timeout()) as client:
-            resp = client.post(url, json=payload)
+            with client.stream("POST", url, json=stream_payload) as resp:
+                if resp.status_code >= 400:
+                    body_bytes = resp.read()
+                    body = body_bytes.decode("utf-8", errors="replace")[:500]
+                    err_msg = f"[{label}] Ollama returned {resp.status_code}: {body}"
+                    logger.warning(err_msg)
+                    print(err_msg, flush=True)
+                    raise LLMError(
+                        f"Ollama {resp.status_code} from '{model}'. {_classify_error(model, body)} Body: {body}"
+                    )
+
+                print(f"[{label}] stream> ", end="", flush=True)
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    lines_seen += 1
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        # Non-JSON line (rare); dump it so user can see.
+                        print(f"\n[{label}] non-json line: {line[:200]}", flush=True)
+                        continue
+                    chunk = obj.get("message", {}).get("content", "")
+                    if chunk:
+                        if first_token_at is None:
+                            first_token_at = time.time()
+                        print(chunk, end="", flush=True)
+                        accumulated.append(chunk)
+                    if obj.get("done"):
+                        final_obj = obj
+                print(flush=True)  # newline after streaming ends
     except httpx.ConnectError as e:
         raise LLMError(f"Cannot reach Ollama at {url}: {e}") from e
     except httpx.TimeoutException as e:
         raise LLMError(f"Ollama request timed out: {e}") from e
 
     elapsed = time.time() - t0
-    if resp.status_code >= 400:
-        body = resp.text[:500]
-        err_msg = f"[{label}] Ollama returned {resp.status_code}: {body}"
-        logger.warning(err_msg)
-        print(err_msg, flush=True)
+    content = "".join(accumulated)
+    # Preserve any top-level stats Ollama returned (eval_count, total_duration, etc.)
+    data = dict(final_obj) if final_obj else {}
+    data["message"] = {"role": "assistant", "content": content}
 
-        body_l = body.lower()
-        # Check crashes FIRST — the body often contains a URL like
-        # "llama.cpp/pull/17869" which would otherwise match a naive "pull" hint.
-        if any(s in body for s in ("GGML_ASSERT", "SIGABRT", "SIGSEGV", "panic")) or "out of memory" in body_l:
-            hint = (
-                "Ollama/llama.cpp runtime crashed (often a Metal bug fixed upstream). "
-                "Fixes in order of likelihood: "
-                "1) update Ollama (`brew upgrade ollama` or redownload the app), "
-                "2) lower VL_NUM_CTX (e.g. 4096), "
-                "3) lower VL_MAX_PIXELS (e.g. 602112), "
-                "4) try `OLLAMA_FLASH_ATTENTION=0 ollama serve`, "
-                f"5) re-pull: `ollama pull {model}`."
-            )
-        elif "does not support images" in body_l or "not a multimodal" in body_l:
-            hint = (
-                f"Model '{model}' is not multimodal. Set VL_MODEL to a vision tag "
-                f"(e.g. qwen2.5vl:7b, llama3.2-vision:11b, minicpm-v)."
-            )
-        elif "try pulling" in body_l or "model not found" in body_l or "no such model" in body_l:
-            hint = f"Model '{model}' isn't pulled. Run: ollama pull {model}"
-        else:
-            hint = "See Ollama server logs for details."
-
-        raise LLMError(f"Ollama {resp.status_code} from '{model}'. {hint} Body: {body}")
-
-    data = resp.json()
-    content = data.get("message", {}).get("content", "")
-    msg = f"[{label}] <- {elapsed:.2f}s | response: {_preview(content)}"
-    logger.info(msg)
-    print(msg, flush=True)
+    ttft = f", first-token {first_token_at - t0:.2f}s" if first_token_at else ""
+    eval_count = data.get("eval_count")
+    tok_info = f", {eval_count} tokens" if eval_count else ""
+    done_msg = f"[{label}] <- {elapsed:.2f}s{ttft}{tok_info} | {len(content)} chars"
+    logger.info(done_msg)
+    print(done_msg, flush=True)
     return data, elapsed
 
 
